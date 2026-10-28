@@ -15,7 +15,9 @@
     },
     "forceCodeSigning": false
   },
-  "dependencies": {},
+  "dependencies": {
+    "minecraft-launcher-core": "^0.0.9"
+  },
   "devDependencies": {
     "electron": "^28.3.3",
     "electron-builder": "^24.13.3"
