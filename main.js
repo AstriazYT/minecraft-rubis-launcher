@@ -35,7 +35,6 @@ app.on('window-all-closed', () => {
 // --- 2. GESTION DE LA VRAIE CONNEXION MICROSOFT ---
 ipcMain.on('microsoft-login', async (event) => {
     try {
-        // Ouvre la vraie fenêtre de connexion Microsoft avec msmc
         const xboxManager = await msmc.fastAuth("electron", {
             options: {
                 prompt: "select_account"
@@ -48,19 +47,15 @@ ipcMain.on('microsoft-login', async (event) => {
         }
 
         const token = await xboxManager.getMinecraft();
-
-        // Stocke la session d'authentification valide
         userAuth = token.mclc();
-
-        // Récupère le pseudo du joueur
         const username = token.profile.name;
 
-        // Envoie la confirmation de réussite à index.html
         mainWindow.webContents.send('login-success', username);
 
     } catch (error) {
-        console.error("Erreur de connexion Microsoft :", error);
-        mainWindow.webContents.send('status', "Erreur de connexion Microsoft !");
+        console.error("Détail de l'erreur Microsoft :", error); // <-- Affiche l'erreur complète dans la console
+        // Renvoie le message d'erreur précis à ton interface au lieu d'un texte générique
+        mainWindow.webContents.send('status', "Erreur : " + (error.message || error));
     }
 });
 
