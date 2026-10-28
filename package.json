@@ -1,0 +1,23 @@
+{
+  "name": "radiant-launcher-win8",
+  "version": "1.0.0",
+  "description": "Launcher Radiant Survie",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.radiant.survie.win10",
+    "productName": "Radiant Survie",
+    "win": {
+      "target": ["portable"]
+    },
+    "forceCodeSigning": false
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "^28.3.3",
+    "electron-builder": "^24.13.3"
+  }
+}
