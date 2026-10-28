@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const msmc = require('msmc'); // Gestionnaire de connexion Microsoft corrigé
-const { Launcher } = require('minecraft-launcher-core');
+const Launcher = require('minecraft-launcher-core');
 
 const launcher = new Launcher();
 let mainWindow;
