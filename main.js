@@ -1,82 +1,103 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
-const { Client, Authenticator } = require('minecraft-launcher-core');
 const path = require('path');
-const axios = require('axios');
+const msmc = require('msmc'); // Gestionnaire de connexion Microsoft corrigé
+const { Launcher } = require('minecraft-launcher-core');
 
+const launcher = new Launcher();
 let mainWindow;
-let cachedAuth = null;
+let userAuth = null; // Stockera la session Microsoft valide
+
+// 1. Définition d'un dossier propre pour le jeu dans AppData
+const gameDirectory = path.join(process.env.APPDATA, '.radiant-survie');
 
 function createWindow() {
-  const win = new BrowserWindow({
-    width: 900,
-    height: 600,
-    frame: false,
-    webPreferences: { 
-      nodeIntegration: true, 
-      contextIsolation: false 
-    }
-  });
-  win.loadFile('index.html');
-  return win;
+    mainWindow = new BrowserWindow({
+        width: 900,
+        height: 600,
+        frame: false, // Windowless personnalisé
+        resizable: false,
+        webPreferences: {
+            nodeIntegration: true,
+            contextIsolation: false
+        },
+        icon: path.join(__dirname, 'build/icon.ico') // Icône de la fenêtre
+    });
+
+    mainWindow.loadFile('index.html');
 }
 
-app.whenReady().then(() => {
-  mainWindow = createWindow();
+app.whenReady().then(createWindow);
 
-  // Étape 1 : Authentification Microsoft Officielle
-  ipcMain.on('microsoft-login', async () => {
+app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit();
+});
+
+// --- 2. GESTION DE LA VRAIE CONNEXION MICROSOFT ---
+ipcMain.on('microsoft-login', async (event) => {
     try {
-      mainWindow.webContents.send('status', { text: 'Connexion à Microsoft...' });
-      cachedAuth = await Authenticator.getAuth("microsoft");
-      mainWindow.webContents.send('login-success', cachedAuth.name);
-    } catch (error) {
-      console.error(error);
-      mainWindow.webContents.send('status', { text: 'Échec de la connexion Microsoft.' });
-    }
-  });
-
-  // Étape 2 : Téléchargement Forge/Mods & Lancement vers radiant.falix.me
-  ipcMain.on('launch-game', async () => {
-    try {
-      mainWindow.webContents.send('status', { text: 'Vérification des mises à jour...', percent: 0 });
-      
-      const response = await axios.get('https://astriaz.github.io/minecraft-launcher-files/versions/1.20.1/config.json');
-      const remoteConfig = response.data;
-
-      mainWindow.webContents.send('status', { text: 'Téléchargement de Forge et des mods...', percent: 20 });
-      const launcher = new Client();
-      
-      const opts = {
-        authorization: cachedAuth,
-        root: path.join(app.getPath('userData'), 'game_files'),
-        version: {
-          number: remoteConfig.gameVersion,
-          type: "release"
-        },
-        forge: remoteConfig.forgeVersionPath,
-        memory: {
-          max: "4G",
-          min: "2G"
-        },
-        server: {
-          host: "radiant.falix.me",
-          port: 25565
-        }
-      };
-
-      launcher.on('progress', (e) => {
-        mainWindow.webContents.send('status', {
-          text: 'Installation des fichiers de Radiant...',
-          percent: e.percent
+        // Ouvre la vraie fenêtre de connexion Microsoft avec msmc
+        const xboxManager = await msmc.fastAuth("electron", {
+            options: {
+                prompt: "select_account"
+            }
         });
-      });
 
-      await launcher.launch(opts);
-      mainWindow.webContents.send('status', { text: 'Lancement de Radiant !', percent: 100 });
+        if (!xboxManager) {
+            mainWindow.webContents.send('status', "Connexion annulée.");
+            return;
+        }
+
+        const token = await xboxManager.getMinecraft();
+
+        // Stocke la session d'authentification valide
+        userAuth = token.mclc();
+
+        // Récupère le pseudo du joueur
+        const username = token.profile.name;
+
+        // Envoie la confirmation de réussite à index.html
+        mainWindow.webContents.send('login-success', username);
 
     } catch (error) {
-      console.error(error);
-      mainWindow.webContents.send('status', { text: 'Erreur au lancement du jeu.', percent: 0 });
+        console.error("Erreur de connexion Microsoft :", error);
+        mainWindow.webContents.send('status', "Erreur de connexion Microsoft !");
     }
-  });
+});
+
+// --- 3. LANCEMENT DE MINECRAFT ---
+ipcMain.on('launch-game', async () => {
+    if (!userAuth) {
+        mainWindow.webContents.send('status', "Erreur : Non connecté !");
+        return;
+    }
+
+    const opts = {
+        authorization: userAuth,
+        root: gameDirectory, // Dossier propre dans AppData/.radiant-survie
+        version: {
+            number: "1.20.1",
+            type: "release"
+        },
+        memory: {
+            max: "4G",
+            min: "2G"
+        }
+    };
+
+    launcher.launch(opts);
+
+    launcher.on('debug', (e) => console.log(e));
+    
+    launcher.on('progress', (e) => {
+        // Envoie la vraie progression (pourcentage + état) à index.html
+        const percentage = (e.task / e.total) * 100;
+        mainWindow.webContents.send('status', {
+            text: `Téléchargement : ${e.type}`,
+            percent: percentage
+        });
+    });
+
+    launcher.on('data', (e) => {
+        mainWindow.webContents.send('status', "Jeu en cours d'exécution...");
+    });
 });
