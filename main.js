@@ -1,9 +1,9 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const msmc = require('msmc'); // Gestionnaire de connexion Microsoft corrigé
-const Launcher = require('minecraft-launcher-core');
+const { Client } = require('minecraft-launcher-core');
 
-const launcher = new Launcher();
+const launcher = new Client();
 let mainWindow;
 let userAuth = null; // Stockera la session Microsoft valide
 
