@@ -2,7 +2,7 @@
   "name": "radiant-launcher-win8",
   "version": "1.0.0",
   "description": "Launcher Radiant Survie",
-  "author": "AstriazYT",
+  "author": "Radw123ytb",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
