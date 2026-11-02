@@ -1,5 +1,8 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
+const fs = require('fs');
+const https = require('https');
+const AdmZip = require('adm-zip');
 const { Auth } = require('msmc');
 const { Client } = require('minecraft-launcher-core');
 const { autoUpdater } = require('electron-updater');
@@ -137,6 +140,71 @@ ipcMain.on('microsoft-login', async () => {
     }
 });
 
+// --- Java 17 automatique (Temurin, téléchargé au premier lancement) ---
+const JAVA_URL = 'https://api.adoptium.net/v3/binary/latest/17/ga/windows/x64/jre/hotspot/normal/eclipse';
+const javaDir = path.join(gameDirectory, 'runtime', 'java17');
+
+function findJavaExe() {
+    if (!fs.existsSync(javaDir)) return null;
+    for (const entry of fs.readdirSync(javaDir)) {
+        const exe = path.join(javaDir, entry, 'bin', 'java.exe');
+        if (fs.existsSync(exe)) return exe;
+    }
+    return null;
+}
+
+function download(url, dest, onProgress, redirects = 0) {
+    return new Promise((resolve, reject) => {
+        if (redirects > 5) return reject(new Error('Trop de redirections'));
+
+        https.get(url, { headers: { 'User-Agent': 'RadiantLauncher' } }, (res) => {
+            if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+                res.resume();
+                const next = new URL(res.headers.location, url).toString();
+                return resolve(download(next, dest, onProgress, redirects + 1));
+            }
+            if (res.statusCode !== 200) {
+                res.resume();
+                return reject(new Error('Téléchargement impossible (HTTP ' + res.statusCode + ')'));
+            }
+
+            const total = parseInt(res.headers['content-length'] || '0', 10);
+            let done = 0;
+            const file = fs.createWriteStream(dest);
+
+            res.on('data', (chunk) => {
+                done += chunk.length;
+                if (total) onProgress((done / total) * 100);
+            });
+            res.pipe(file);
+            file.on('finish', () => file.close(resolve));
+            file.on('error', reject);
+        }).on('error', reject);
+    });
+}
+
+async function ensureJava() {
+    const existing = findJavaExe();
+    if (existing) return existing;
+
+    fs.mkdirSync(javaDir, { recursive: true });
+    const zipPath = path.join(javaDir, 'java17.zip');
+    const label = 'Téléchargement de Java 17 (première fois)...';
+
+    send('status', { text: label, percent: 0 });
+    await download(JAVA_URL, zipPath, (percent) => {
+        send('status', { text: label, percent });
+    });
+
+    send('status', { text: 'Installation de Java 17...', percent: 100 });
+    new AdmZip(zipPath).extractAllTo(javaDir, true);
+    fs.unlinkSync(zipPath);
+
+    const exe = findJavaExe();
+    if (!exe) throw new Error('Java 17 introuvable après installation');
+    return exe;
+}
+
 // --- Lancement de Minecraft ---
 ipcMain.on('launch-game', async () => {
     if (!userAuth) {
@@ -158,6 +226,7 @@ ipcMain.on('launch-game', async () => {
     };
 
     try {
+        opts.javaPath = await ensureJava();
         const proc = await launcher.launch(opts);
         if (!proc) {
             send('status', 'Erreur : impossible de lancer le jeu (voir la console).');
