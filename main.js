@@ -1,13 +1,20 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
-const { Auth } = require('msmc'); // Correction point 1
+const { Auth } = require('msmc');
 const { Client } = require('minecraft-launcher-core');
 
 const launcher = new Client();
 let mainWindow;
-let userAuth = null;
+let userAuth = null; // Session Microsoft valide
 
-const gameDirectory = path.join(process.env.APPDATA, '.radiant-survie');
+// Dossier de jeu propre dans AppData/Roaming
+const gameDirectory = path.join(app.getPath('appData'), '.radiant-survie');
+
+function send(channel, data) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(channel, data);
+    }
+}
 
 function createWindow() {
     mainWindow = new BrowserWindow({
@@ -31,48 +38,53 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
 });
 
-// --- 1. CONNEXION MICROSOFT (Syntaxe msmc v5) ---
-ipcMain.on('microsoft-login', async (event) => {
-    try {
-        const authManager = new Auth("select_account");
-        const xboxManager = await authManager.launch("electron");
-        
-        if (!xboxManager) {
-            mainWindow.webContents.send('status', "Connexion annulée.");
-            return;
-        }
-
-        const token = await xboxManager.getMinecraft();
-        userAuth = token.mclc();
-        const username = token.profile.name;
-
-        mainWindow.webContents.send('login-success', username);
-
-    } catch (error) {
-        console.error("Erreur de connexion Microsoft :", error);
-        mainWindow.webContents.send('status', "Erreur : " + (error.message || error));
-    }
-});
-
-// --- 5. ÉVÉNEMENTS DU LAUNCHER (Placés en dehors pour ne pas les dupliquer) ---
-launcher.on('debug', (e) => console.log(e));
+// --- Écouteurs du launcher : enregistrés UNE seule fois ---
+launcher.on('debug', (e) => console.log('[MCLC]', e));
 
 launcher.on('progress', (e) => {
-    const percentage = (e.task / e.total) * 100;
-    mainWindow.webContents.send('status', {
+    const percentage = e.total ? (e.task / e.total) * 100 : 0;
+    send('status', {
         text: `Téléchargement : ${e.type}`,
         percent: percentage
     });
 });
 
-launcher.on('data', (e) => {
-    mainWindow.webContents.send('status', "Jeu en cours d'exécution...");
+launcher.on('data', () => {
+    send('status', "Jeu en cours d'exécution...");
 });
 
-// --- LANCEMENT DE MINECRAFT ---
+launcher.on('close', () => {
+    send('game-closed');
+});
+
+// --- Connexion Microsoft (msmc v5) ---
+ipcMain.on('microsoft-login', async () => {
+    try {
+        const authManager = new Auth('select_account');
+        const xboxManager = await authManager.launch('electron');
+        const token = await xboxManager.getMinecraft();
+
+        userAuth = token.mclc();
+        const username = token.profile.name;
+
+        send('login-success', username);
+    } catch (error) {
+        console.error('Erreur de connexion Microsoft :', error);
+        const msg = String((error && error.message) || error);
+
+        // Fenêtre fermée par l'utilisateur
+        if (msg.includes('closed')) {
+            send('status', 'Erreur : connexion annulée.');
+        } else {
+            send('status', 'Erreur : ' + msg);
+        }
+    }
+});
+
+// --- Lancement de Minecraft ---
 ipcMain.on('launch-game', async () => {
     if (!userAuth) {
-        mainWindow.webContents.send('status', "Erreur : Non connecté !");
+        send('status', 'Erreur : Non connecté !');
         return;
     }
 
@@ -80,19 +92,22 @@ ipcMain.on('launch-game', async () => {
         authorization: userAuth,
         root: gameDirectory,
         version: {
-            number: "1.20.1",
-            type: "release"
+            number: '1.20.1',
+            type: 'release'
         },
         memory: {
-            max: "4G",
-            min: "2G"
+            max: '4G',
+            min: '2G'
         }
     };
 
     try {
-        launcher.launch(opts);
-    } catch (err) {
-        console.error("Erreur de lancement :", err);
-        mainWindow.webContents.send('status', "Erreur au lancement du jeu");
+        const proc = await launcher.launch(opts);
+        if (!proc) {
+            send('status', 'Erreur : impossible de lancer le jeu (voir la console).');
+        }
+    } catch (error) {
+        console.error('Erreur de lancement :', error);
+        send('status', 'Erreur : ' + ((error && error.message) || error));
     }
 });
