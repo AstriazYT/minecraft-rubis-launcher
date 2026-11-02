@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
@@ -10,6 +10,7 @@ const { autoUpdater } = require('electron-updater');
 const launcher = new Client();
 let mainWindow;
 let userAuth = null; // Session Microsoft valide
+let currentAccountId = null; // Compte actuellement connecté
 
 // Dossier de jeu propre dans AppData/Roaming
 const gameDirectory = path.join(app.getPath('appData'), '.radiant-survie');
@@ -116,28 +117,132 @@ launcher.on('close', () => {
     send('game-closed');
 });
 
-// --- Connexion Microsoft (msmc v5) ---
+// --- Comptes Microsoft mémorisés (jetons chiffrés par Windows) ---
+const accountsFile = path.join(app.getPath('userData'), 'accounts.json');
+
+function loadAccounts() {
+    try {
+        const data = JSON.parse(fs.readFileSync(accountsFile, 'utf-8'));
+        return {
+            lastUsed: data.lastUsed || null,
+            accounts: Array.isArray(data.accounts) ? data.accounts : []
+        };
+    } catch (e) {
+        return { lastUsed: null, accounts: [] };
+    }
+}
+
+function saveAccounts(store) {
+    fs.mkdirSync(path.dirname(accountsFile), { recursive: true });
+    fs.writeFileSync(accountsFile, JSON.stringify(store, null, 2));
+}
+
+function encryptToken(token) {
+    if (!safeStorage.isEncryptionAvailable()) return null; // on ne stocke jamais en clair
+    return safeStorage.encryptString(token).toString('base64');
+}
+
+function decryptToken(encrypted) {
+    return safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
+}
+
+function sendAccounts() {
+    const store = loadAccounts();
+    send('accounts', {
+        lastUsed: store.lastUsed,
+        accounts: store.accounts.map((a) => ({ id: a.id, name: a.name }))
+    });
+}
+
+function newAuth() {
+    return new Auth('select_account');
+}
+
+// Termine la connexion : récupère la session Minecraft et mémorise le compte
+async function finishLogin(xboxManager) {
+    const token = await xboxManager.getMinecraft();
+    userAuth = token.mclc();
+
+    const id = token.profile.id;
+    const name = token.profile.name;
+
+    const encrypted = encryptToken(xboxManager.save());
+    if (encrypted) {
+        const store = loadAccounts();
+        const existing = store.accounts.find((a) => a.id === id);
+        if (existing) {
+            existing.name = name;
+            existing.token = encrypted;
+        } else {
+            store.accounts.push({ id, name, token: encrypted });
+        }
+        store.lastUsed = id;
+        saveAccounts(store);
+    }
+
+    currentAccountId = id;
+    send('login-success', { name, id });
+    sendAccounts();
+}
+
+async function loginWithSaved(id) {
+    const store = loadAccounts();
+    const account = store.accounts.find((a) => a.id === id);
+    if (!account) {
+        send('status', 'Erreur : compte introuvable.');
+        return;
+    }
+    try {
+        const xboxManager = await newAuth().refresh(decryptToken(account.token));
+        await finishLogin(xboxManager);
+    } catch (error) {
+        console.error('Erreur de reconnexion :', error);
+        userAuth = null;
+        currentAccountId = null;
+        send('status', 'Erreur : session expirée, reconnecte ce compte avec « + Ajouter ».');
+    }
+}
+
+// Au démarrage : liste des comptes + reconnexion automatique du dernier compte
+ipcMain.on('get-accounts', () => {
+    const store = loadAccounts();
+    sendAccounts();
+    if (store.lastUsed && store.accounts.some((a) => a.id === store.lastUsed)) {
+        send('status', 'Connexion automatique...');
+        loginWithSaved(store.lastUsed);
+    }
+});
+
+// Ajouter / connecter un compte (fenêtre officielle Microsoft)
 ipcMain.on('microsoft-login', async () => {
     try {
-        const authManager = new Auth('select_account');
-        const xboxManager = await authManager.launch('electron');
-        const token = await xboxManager.getMinecraft();
-
-        userAuth = token.mclc();
-        const username = token.profile.name;
-
-        send('login-success', username);
+        const xboxManager = await newAuth().launch('electron');
+        await finishLogin(xboxManager);
     } catch (error) {
         console.error('Erreur de connexion Microsoft :', error);
         const msg = String((error && error.message) || error);
-
-        // Fenêtre fermée par l'utilisateur
-        if (msg.includes('closed')) {
-            send('status', 'Erreur : connexion annulée.');
-        } else {
-            send('status', 'Erreur : ' + msg);
-        }
+        send('status', msg.includes('closed') ? 'Erreur : connexion annulée.' : 'Erreur : ' + msg);
     }
+});
+
+// Changer de compte
+ipcMain.on('select-account', (event, id) => {
+    loginWithSaved(id);
+});
+
+// Retirer un compte de la liste
+ipcMain.on('remove-account', (event, id) => {
+    const store = loadAccounts();
+    store.accounts = store.accounts.filter((a) => a.id !== id);
+    if (store.lastUsed === id) store.lastUsed = null;
+    saveAccounts(store);
+
+    if (currentAccountId === id) {
+        userAuth = null;
+        currentAccountId = null;
+        send('logged-out');
+    }
+    sendAccounts();
 });
 
 // --- Java 17 automatique (Temurin, téléchargé au premier lancement) ---
