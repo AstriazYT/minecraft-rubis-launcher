@@ -177,6 +177,50 @@
         .help-link:hover {
             color: rgba(255, 255, 255, 0.7);
         }
+
+        .account-bar {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            margin-top: 6px;
+            -webkit-app-region: no-drag;
+        }
+
+        .account-bar.visible {
+            display: flex;
+        }
+
+        .account-bar select {
+            background: #15161c;
+            color: #ffffff;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 12px;
+            min-width: 180px;
+            outline: none;
+        }
+
+        .mini-btn {
+            background: none;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 6px;
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 11px;
+            padding: 8px 10px;
+            cursor: pointer;
+            transition: color 0.2s, border-color 0.2s;
+        }
+
+        .mini-btn:hover {
+            color: #ffffff;
+            border-color: rgba(255, 255, 255, 0.35);
+        }
+
+        .mini-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -190,6 +234,12 @@
             <span class="logo-text">R</span>
         </div>
         <div class="server-name" id="user-display">Radiant Survie</div>
+
+        <div class="account-bar" id="account-bar">
+            <select id="account-select"></select>
+            <button class="mini-btn" id="add-btn">+ Ajouter</button>
+            <button class="mini-btn" id="remove-btn">Retirer</button>
+        </div>
     </div>
 
     <div class="bottom-container">
@@ -216,9 +266,19 @@
         const progressFill = document.getElementById('progress-fill');
         const userDisplay = document.getElementById('user-display');
         const closeBtn = document.getElementById('close-btn');
+        const accountBar = document.getElementById('account-bar');
+        const accountSelect = document.getElementById('account-select');
+        const addBtn = document.getElementById('add-btn');
+        const removeBtn = document.getElementById('remove-btn');
 
         let currentState = 'LOGIN'; // 'LOGIN' puis 'PLAY'
         let loggedIn = false;
+        let activeId = null;
+        let booting = true;
+
+        // Au démarrage, on attend la réponse du programme (reconnexion automatique)
+        mainBtn.disabled = true;
+        mainBtn.innerText = 'CHARGEMENT...';
 
         function resetProgress() {
             progressFill.style.width = '0%';
@@ -237,16 +297,44 @@
             mainBtn.innerText = 'JOUER';
         }
 
+        function renderAccounts(list) {
+            accountSelect.innerHTML = '';
+            if (!list.length) {
+                accountBar.classList.remove('visible');
+                return;
+            }
+            accountBar.classList.add('visible');
+
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = 'Choisir un compte';
+            placeholder.disabled = true;
+            accountSelect.appendChild(placeholder);
+
+            list.forEach((acc) => {
+                const opt = document.createElement('option');
+                opt.value = acc.id;
+                opt.textContent = acc.name;
+                accountSelect.appendChild(opt);
+            });
+
+            accountSelect.value = activeId || '';
+        }
+
+        function startMicrosoftLogin() {
+            mainBtn.disabled = true;
+            mainBtn.innerText = 'CONNEXION EN COURS...';
+            statusText.innerText = 'Ouverture de la fenêtre Microsoft...';
+            ipcRenderer.send('microsoft-login');
+        }
+
         closeBtn.addEventListener('click', () => {
             window.close();
         });
 
         mainBtn.addEventListener('click', () => {
             if (currentState === 'LOGIN') {
-                mainBtn.disabled = true;
-                mainBtn.innerText = 'CONNEXION EN COURS...';
-                statusText.innerText = 'Ouverture de la fenêtre Microsoft...';
-                ipcRenderer.send('microsoft-login');
+                startMicrosoftLogin();
             } else if (currentState === 'PLAY') {
                 mainBtn.disabled = true;
                 mainBtn.innerText = 'LANCEMENT...';
@@ -257,12 +345,57 @@
             }
         });
 
-        // Connexion Microsoft réussie
-        ipcRenderer.on('login-success', (event, username) => {
+        addBtn.addEventListener('click', startMicrosoftLogin);
+
+        accountSelect.addEventListener('change', () => {
+            const id = accountSelect.value;
+            if (!id || id === activeId) return;
+            loggedIn = false;
+            activeId = null;
+            mainBtn.disabled = true;
+            mainBtn.innerText = 'CONNEXION...';
+            statusText.innerText = 'Connexion au compte...';
+            ipcRenderer.send('select-account', id);
+        });
+
+        removeBtn.addEventListener('click', () => {
+            const id = accountSelect.value || activeId;
+            if (!id) return;
+            ipcRenderer.send('remove-account', id);
+        });
+
+        // Liste des comptes mémorisés
+        ipcRenderer.on('accounts', (event, data) => {
+            renderAccounts(data.accounts);
+            if (booting) {
+                booting = false;
+                // Sans compte mémorisé : on propose la connexion.
+                // Sinon la reconnexion automatique est en cours.
+                if (!data.lastUsed) {
+                    statusText.innerText = 'En attente de connexion...';
+                    showLoginButton();
+                }
+            }
+        });
+
+        // Connexion réussie
+        ipcRenderer.on('login-success', (event, data) => {
             loggedIn = true;
-            userDisplay.innerText = `Connecté : ${username}`;
+            activeId = data.id;
+            userDisplay.innerText = `Connecté : ${data.name}`;
             statusText.innerText = 'Prêt à jouer';
+            accountSelect.value = data.id;
             showPlayButton();
+        });
+
+        // Le compte actif a été retiré
+        ipcRenderer.on('logged-out', () => {
+            loggedIn = false;
+            activeId = null;
+            userDisplay.innerText = 'Radiant Survie';
+            statusText.innerText = 'En attente de connexion...';
+            resetProgress();
+            showLoginButton();
         });
 
         // Le jeu a été fermé : on peut relancer
@@ -277,8 +410,8 @@
             if (typeof data === 'string') {
                 statusText.innerText = data;
 
-                // En cas d'erreur, on réactive le bouton
                 if (data.includes('Erreur')) {
+                    booting = false;
                     resetProgress();
                     if (loggedIn) {
                         showPlayButton();
@@ -294,6 +427,9 @@
                 }
             }
         });
+
+        // Demande la liste des comptes (et la reconnexion automatique)
+        ipcRenderer.send('get-accounts');
     </script>
 </body>
 </html>
