@@ -203,7 +203,7 @@
         </div>
 
         <button id="main-btn" class="btn-action">SE CONNECTER (MICROSOFT)</button>
-        
+
         <a href="#" class="help-link">Problème lors de la connexion ?</a>
     </div>
 
@@ -217,7 +217,25 @@
         const userDisplay = document.getElementById('user-display');
         const closeBtn = document.getElementById('close-btn');
 
-        let currentState = 'LOGIN';
+        let currentState = 'LOGIN'; // 'LOGIN' puis 'PLAY'
+        let loggedIn = false;
+
+        function resetProgress() {
+            progressFill.style.width = '0%';
+            percentText.innerText = '';
+        }
+
+        function showLoginButton() {
+            currentState = 'LOGIN';
+            mainBtn.disabled = false;
+            mainBtn.innerText = 'SE CONNECTER (MICROSOFT)';
+        }
+
+        function showPlayButton() {
+            currentState = 'PLAY';
+            mainBtn.disabled = false;
+            mainBtn.innerText = 'JOUER';
+        }
 
         closeBtn.addEventListener('click', () => {
             window.close();
@@ -239,23 +257,34 @@
             }
         });
 
+        // Connexion Microsoft réussie
         ipcRenderer.on('login-success', (event, username) => {
-            currentState = 'PLAY';
+            loggedIn = true;
             userDisplay.innerText = `Connecté : ${username}`;
             statusText.innerText = 'Prêt à jouer';
-            mainBtn.disabled = false;
-            mainBtn.innerText = 'JOUER';
+            showPlayButton();
         });
 
+        // Le jeu a été fermé : on peut relancer
+        ipcRenderer.on('game-closed', () => {
+            statusText.innerText = 'Prêt à jouer';
+            resetProgress();
+            showPlayButton();
+        });
+
+        // Suivi du statut / de la progression
         ipcRenderer.on('status', (event, data) => {
             if (typeof data === 'string') {
                 statusText.innerText = data;
-                
-                // Correction de Claude : Réactive le bouton si une erreur survient
-                if (data.includes('Erreur') || data.includes('annulée')) {
-                    mainBtn.disabled = false;
-                    mainBtn.innerText = 'SE CONNECTER (MICROSOFT)';
-                    currentState = 'LOGIN';
+
+                // En cas d'erreur, on réactive le bouton
+                if (data.includes('Erreur')) {
+                    resetProgress();
+                    if (loggedIn) {
+                        showPlayButton();
+                    } else {
+                        showLoginButton();
+                    }
                 }
             } else if (typeof data === 'object') {
                 if (data.text) statusText.innerText = data.text;
