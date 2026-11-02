@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const { Auth } = require('msmc');
 const { Client } = require('minecraft-launcher-core');
+const { autoUpdater } = require('electron-updater');
 
 const launcher = new Client();
 let mainWindow;
@@ -17,6 +18,35 @@ function send(channel, data) {
 }
 
 let splashWindow;
+
+// --- Mises à jour automatiques (via les Releases GitHub) ---
+function setupAutoUpdate() {
+    if (!app.isPackaged) return; // pas de MAJ en mode développement
+
+    autoUpdater.autoDownload = true;
+
+    autoUpdater.on('update-available', (info) => {
+        send('status', `Mise à jour ${info.version} : téléchargement...`);
+    });
+
+    autoUpdater.on('download-progress', (p) => {
+        send('status', {
+            text: 'Téléchargement de la mise à jour...',
+            percent: p.percent
+        });
+    });
+
+    autoUpdater.on('update-downloaded', () => {
+        send('status', 'Mise à jour prête, redémarrage...');
+        setTimeout(() => autoUpdater.quitAndInstall(), 2000);
+    });
+
+    autoUpdater.on('error', (err) => {
+        console.error('Erreur de mise à jour :', err);
+    });
+
+    autoUpdater.checkForUpdates().catch((err) => console.error(err));
+}
 
 function createWindow() {
     // Écran de démarrage "RADIANT"
@@ -54,6 +84,7 @@ function createWindow() {
     Promise.all([minDelay, mainReady]).then(() => {
         if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
         mainWindow.show();
+        setupAutoUpdate();
     });
 }
 
