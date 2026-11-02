@@ -2,20 +2,34 @@
   "name": "radiant-launcher-win8",
   "version": "1.0.0",
   "description": "Launcher Radiant Survie",
+  "author": "AstriazYT",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win portable"
+    "dist": "electron-builder --win nsis"
   },
   "build": {
     "appId": "com.radiant.survie.win10",
     "productName": "Radiant Survie",
     "win": {
-      "target": ["portable"]
+      "target": ["nsis"]
     },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "AstriazYT",
+        "repo": "minecraft-rubis-launcher",
+        "releaseType": "release"
+      }
+    ],
     "forceCodeSigning": false
   },
   "dependencies": {
+    "electron-updater": "^6.3.0",
     "minecraft-launcher-core": "^3.18.2",
     "msmc": "^5.0.0"
   },
