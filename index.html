@@ -202,7 +202,6 @@
             <div id="progress-fill" class="progress-bar-fill"></div>
         </div>
 
-        <!-- Au début, le bouton sert à se connecter Microsoft -->
         <button id="main-btn" class="btn-action">SE CONNECTER (MICROSOFT)</button>
         
         <a href="#" class="help-link">Problème lors de la connexion ?</a>
@@ -218,7 +217,7 @@
         const userDisplay = document.getElementById('user-display');
         const closeBtn = document.getElementById('close-btn');
 
-        let currentState = 'LOGIN'; // 'LOGIN' puis 'PLAY'
+        let currentState = 'LOGIN';
 
         closeBtn.addEventListener('click', () => {
             window.close();
@@ -240,7 +239,6 @@
             }
         });
 
-        // Quand la connexion Microsoft est réussie
         ipcRenderer.on('login-success', (event, username) => {
             currentState = 'PLAY';
             userDisplay.innerText = `Connecté : ${username}`;
@@ -249,10 +247,16 @@
             mainBtn.innerText = 'JOUER';
         });
 
-        // Suivi de la progression du lancement du jeu
         ipcRenderer.on('status', (event, data) => {
             if (typeof data === 'string') {
                 statusText.innerText = data;
+                
+                // Correction de Claude : Réactive le bouton si une erreur survient
+                if (data.includes('Erreur') || data.includes('annulée')) {
+                    mainBtn.disabled = false;
+                    mainBtn.innerText = 'SE CONNECTER (MICROSOFT)';
+                    currentState = 'LOGIN';
+                }
             } else if (typeof data === 'object') {
                 if (data.text) statusText.innerText = data.text;
                 if (data.percent !== undefined) {
