@@ -1,1 +1,4 @@
-
+node_modules/
+node-v20.18.0-win-x64/
+versions/
+dist/
