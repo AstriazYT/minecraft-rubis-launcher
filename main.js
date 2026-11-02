@@ -16,20 +16,45 @@ function send(channel, data) {
     }
 }
 
+let splashWindow;
+
 function createWindow() {
+    // Écran de démarrage "RADIANT"
+    splashWindow = new BrowserWindow({
+        width: 450,
+        height: 300,
+        frame: false,
+        resizable: false,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        backgroundColor: '#0b0c10',
+        icon: path.join(__dirname, 'build/icon.ico')
+    });
+    splashWindow.loadFile('splash.html');
+
+    // Fenêtre principale, cachée tant que le splash est affiché
     mainWindow = new BrowserWindow({
         width: 900,
         height: 600,
         frame: false,
         resizable: false,
+        show: false,
         webPreferences: {
             nodeIntegration: true,
             contextIsolation: false
         },
         icon: path.join(__dirname, 'build/icon.ico')
     });
-
     mainWindow.loadFile('index.html');
+
+    // On attend au moins 2,5 s ET que la fenêtre principale soit prête
+    const minDelay = new Promise((resolve) => setTimeout(resolve, 2500));
+    const mainReady = new Promise((resolve) => mainWindow.once('ready-to-show', resolve));
+
+    Promise.all([minDelay, mainReady]).then(() => {
+        if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
+        mainWindow.show();
+    });
 }
 
 app.whenReady().then(createWindow);
