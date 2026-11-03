@@ -38,6 +38,7 @@
   "dependencies": {
     "adm-zip": "^0.5.16",
     "electron-updater": "^6.3.0",
+    "fs-extra": "^11.2.0",
     "minecraft-launcher-core": "^3.18.2",
     "msmc": "^5.0.0"
   },
