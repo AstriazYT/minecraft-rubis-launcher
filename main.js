@@ -24,13 +24,15 @@ function send(channel, data) {
 
 let splashWindow;
 
-// --- Mises à jour automatiques du Launcher ---
+// --- Mises à jour manuelles et automatiques du Launcher (via la flèche) ---
 function setupAutoUpdate() {
-    if (!app.isPackaged) return;
-    autoUpdater.autoDownload = true;
+    if (!app.isPackaged) return; // Ignore en mode développement
+
+    autoUpdater.autoDownload = false; // Désactivé pour laisser le contrôle au bouton de téléchargement
 
     autoUpdater.on('update-available', (info) => {
-        send('status', `Mise à jour ${info.version} : téléchargement...`);
+        send('status', `Mise à jour ${info.version} disponible ! Téléchargement...`);
+        autoUpdater.downloadUpdate();
     });
 
     autoUpdater.on('download-progress', (p) => {
@@ -41,12 +43,29 @@ function setupAutoUpdate() {
     });
 
     autoUpdater.on('update-downloaded', () => {
-        send('status', 'Mise à jour prête, redémarrage...');
+        send('status', 'Mise à jour prête ! Redémarrage...');
         setTimeout(() => autoUpdater.quitAndInstall(), 2000);
     });
 
-    autoUpdater.checkForUpdates().catch((err) => console.error(err));
+    autoUpdater.on('update-not-available', () => {
+        send('status', 'Ton launcher est déjà à jour !');
+    });
+
+    autoUpdater.on('error', (err) => {
+        console.error('Erreur de mise à jour :', err);
+        send('status', 'Erreur lors de la recherche de mise à jour.');
+    });
 }
+
+// Déclencheur relié au bouton avec la flèche vers le bas depuis l'interface
+ipcMain.on('check-for-updates', () => {
+    if (app.isPackaged) {
+        send('status', 'Recherche de mise à jour...');
+        autoUpdater.checkForUpdates();
+    } else {
+        send('status', 'Mode dev : impossible de mettre à jour.');
+    }
+});
 
 function createWindow() {
     splashWindow = new BrowserWindow({
@@ -82,8 +101,7 @@ function createWindow() {
         if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
         mainWindow.show();
         setupAutoUpdate();
-        checkServerStatus(); // Vérification initiale du statut du serveur
-        // Actualiser le statut du serveur toutes les 60 secondes
+        checkServerStatus();
         setInterval(checkServerStatus, 60000);
     });
 }
@@ -98,13 +116,8 @@ app.on('window-all-closed', () => {
 ipcMain.on('minimize-window', () => mainWindow && mainWindow.minimize());
 ipcMain.on('close-window', () => mainWindow && mainWindow.close());
 
-// --- Statut du serveur Falix (API Minecraft Ping) ---
+// --- Statut du serveur Falix ---
 function checkServerStatus() {
-    const serverData = JSON.stringify({
-        host: "eu17-free.falixserver.net",
-        port: 25565
-    });
-
     const req = https.request({
         hostname: 'api.mcsrvstat.us',
         path: '/3/eu17-free.falixserver.net',
@@ -135,6 +148,23 @@ function checkServerStatus() {
 }
 
 ipcMain.on('check-server', () => checkServerStatus());
+
+// --- Réparation du jeu ---
+ipcMain.on('repair-game', () => {
+    try {
+        const foldersToClean = ['config', 'mods', 'libraries', 'versions'];
+        for (const folder of foldersToClean) {
+            const folderPath = path.join(gameDirectory, folder);
+            if (fs.existsSync(folderPath)) {
+                fs.rmSync(folderPath, { recursive: true, force: true });
+            }
+        }
+        send('status', 'Jeu réparé avec succès ! Relance le lancement.');
+    } catch (err) {
+        console.error('Erreur lors de la réparation :', err);
+        send('status', 'Erreur lors du nettoyage des fichiers.');
+    }
+});
 
 // --- Comptes Microsoft ---
 const accountsFile = path.join(app.getPath('userData'), 'accounts.json');
@@ -301,11 +331,9 @@ async function ensureJava() {
     return findJavaExe();
 }
 
-// --- Synchronisation et Mise à Jour Automatique des Mods ---
+// --- Synchronisation des Mods ---
 async function ensureMods() {
     fs.mkdirSync(modsDirectory, { recursive: true });
-
-    // Liste des mods synchronisés avec GitHub (si tu remplaces un jar sur GitHub, il se mettra à jour chez les joueurs)
     const modsList = [
         {
             name: 'fancymenu_forge_3.8.1_MC_1.20.1.jar',
@@ -320,7 +348,6 @@ async function ensureMods() {
     for (const mod of modsList) {
         const destPath = path.join(modsDirectory, mod.name);
         try {
-            // Télécharge ou remplace si absent
             if (!fs.existsSync(destPath)) {
                 send('status', { text: `Téléchargement du mod ${mod.name}...`, percent: 30 });
                 await download(mod.url, destPath, () => {});
@@ -342,7 +369,6 @@ ipcMain.on('launch-game', async (event, userRam) => {
         send('status', { text: 'Vérification des mods...', percent: 10 });
         await ensureMods();
 
-        // Correctif JSON Forge
         const versionFolder = path.join(gameDirectory, 'versions', '1.20.1-forge-47.2.0');
         const badJson = path.join(versionFolder, '1.20.1.json');
         const correctJson = path.join(versionFolder, '1.20.1-forge-47.2.0.json');
@@ -350,7 +376,6 @@ ipcMain.on('launch-game', async (event, userRam) => {
             try { fs.renameSync(badJson, correctJson); } catch (e) {}
         }
 
-        // RAM allouée (par défaut 4G si non spécifiée par le joueur)
         const ramAllocation = userRam || '4G';
 
         const opts = {
@@ -374,12 +399,29 @@ ipcMain.on('launch-game', async (event, userRam) => {
         };
 
         opts.javaPath = await ensureJava();
+
+        // Masquer le launcher pendant que le jeu tourne
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.hide();
+        }
+
         const proc = await launcher.launch(opts);
         if (!proc) {
             send('status', 'Erreur : impossible de lancer le jeu.');
+            if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
         }
+
+        // Réafficher le launcher quand le jeu s'arrête
+        launcher.on('close', () => {
+            send('game-closed');
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.show();
+            }
+        });
+
     } catch (error) {
         console.error(error);
         send('status', 'Erreur : ' + error.message);
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
     }
 });
