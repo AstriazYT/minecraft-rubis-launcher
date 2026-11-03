@@ -98,6 +98,19 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
 });
 
+// --- Gestion des boutons de la fenêtre (Réduire / Fermer) ---
+ipcMain.on('minimize-window', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.minimize();
+    }
+});
+
+ipcMain.on('close-window', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.close();
+    }
+});
+
 // --- Écouteurs du launcher : enregistrés UNE seule fois ---
 launcher.on('debug', (e) => console.log('[MCLC]', e));
 
@@ -138,7 +151,7 @@ function saveAccounts(store) {
 }
 
 function encryptToken(token) {
-    if (!safeStorage.isEncryptionAvailable()) return null; // on ne stocke jamais en clair
+    if (!safeStorage.isEncryptionAvailable()) return null;
     return safeStorage.encryptString(token).toString('base64');
 }
 
@@ -158,7 +171,6 @@ function newAuth() {
     return new Auth('select_account');
 }
 
-// Termine la connexion : récupère la session Minecraft et mémorise le compte
 async function finishLogin(xboxManager) {
     const token = await xboxManager.getMinecraft();
     userAuth = token.mclc();
@@ -203,7 +215,6 @@ async function loginWithSaved(id) {
     }
 }
 
-// Au démarrage : liste des comptes + reconnexion automatique du dernier compte
 ipcMain.on('get-accounts', () => {
     const store = loadAccounts();
     sendAccounts();
@@ -213,7 +224,6 @@ ipcMain.on('get-accounts', () => {
     }
 });
 
-// Ajouter / connecter un compte (fenêtre officielle Microsoft)
 ipcMain.on('microsoft-login', async () => {
     try {
         const xboxManager = await newAuth().launch('electron');
@@ -225,12 +235,10 @@ ipcMain.on('microsoft-login', async () => {
     }
 });
 
-// Changer de compte
 ipcMain.on('select-account', (event, id) => {
     loginWithSaved(id);
 });
 
-// Retirer un compte de la liste
 ipcMain.on('remove-account', (event, id) => {
     const store = loadAccounts();
     store.accounts = store.accounts.filter((a) => a.id !== id);
@@ -245,7 +253,7 @@ ipcMain.on('remove-account', (event, id) => {
     sendAccounts();
 });
 
-// --- Java 17 automatique (Temurin, téléchargé au premier lancement) ---
+// --- Java 17 automatique (Temurin) ---
 const JAVA_URL = 'https://api.adoptium.net/v3/binary/latest/17/ga/windows/x64/jre/hotspot/normal/eclipse';
 const javaDir = path.join(gameDirectory, 'runtime', 'java17');
 
@@ -310,11 +318,23 @@ async function ensureJava() {
     return exe;
 }
 
-// --- Lancement de Minecraft (Version Forge 1.20.1 + Connexion Directe) ---
+// --- Lancement de Minecraft (Forge 1.20.1 + Connexion Directe) ---
 ipcMain.on('launch-game', async () => {
     if (!userAuth) {
         send('status', 'Erreur : Non connecté !');
         return;
+    }
+
+    // Correctif automatique du bug de nommage JSON de Forge
+    const versionFolder = path.join(gameDirectory, 'versions', '1.20.1-forge-47.2.0');
+    const badJson = path.join(versionFolder, '1.20.1.json');
+    const correctJson = path.join(versionFolder, '1.20.1-forge-47.2.0.json');
+    if (fs.existsSync(badJson) && !fs.existsSync(correctJson)) {
+        try {
+            fs.renameSync(badJson, correctJson);
+        } catch (e) {
+            console.error('Erreur lors du renommage du JSON :', e);
+        }
     }
 
     const opts = {
