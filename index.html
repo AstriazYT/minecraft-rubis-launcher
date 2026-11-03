@@ -226,6 +226,7 @@
 <body>
 
     <div class="window-controls">
+        <button class="win-btn" id="minimize-btn">−</button>
         <button class="win-btn" id="close-btn">✕</button>
     </div>
 
@@ -266,6 +267,7 @@
         const progressFill = document.getElementById('progress-fill');
         const userDisplay = document.getElementById('user-display');
         const closeBtn = document.getElementById('close-btn');
+        const minimizeBtn = document.getElementById('minimize-btn');
         const accountBar = document.getElementById('account-bar');
         const accountSelect = document.getElementById('account-select');
         const addBtn = document.getElementById('add-btn');
@@ -328,6 +330,10 @@
             ipcRenderer.send('microsoft-login');
         }
 
+        minimizeBtn.addEventListener('click', () => {
+            ipcRenderer.send('minimize-window');
+        });
+
         closeBtn.addEventListener('click', () => {
             window.close();
         });
@@ -369,8 +375,6 @@
             renderAccounts(data.accounts);
             if (booting) {
                 booting = false;
-                // Sans compte mémorisé : on propose la connexion.
-                // Sinon la reconnexion automatique est en cours.
                 if (!data.lastUsed) {
                     statusText.innerText = 'En attente de connexion...';
                     showLoginButton();
