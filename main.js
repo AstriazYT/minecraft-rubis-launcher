@@ -318,7 +318,7 @@ async function ensureJava() {
     return exe;
 }
 
-// --- Lancement de Minecraft (Forge 1.20.1 + Connexion Directe) ---
+// --- Lancement de Minecraft (Forge 1.20.1 + Connexion Directe Forcée) ---
 ipcMain.on('launch-game', async () => {
     if (!userAuth) {
         send('status', 'Erreur : Non connecté !');
@@ -350,7 +350,11 @@ ipcMain.on('launch-game', async () => {
             min: '2G'
         },
         server: "eu17-free.falixserver.net",
-        port: 25565
+        port: 25565,
+        quickPlay: {
+            type: "multiplayer",
+            identifier: "eu17-free.falixserver.net:25565"
+        }
     };
 
     try {
