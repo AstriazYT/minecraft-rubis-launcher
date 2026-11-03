@@ -310,7 +310,7 @@ async function ensureJava() {
     return exe;
 }
 
-// --- Lancement de Minecraft (Version Fabric + Serveur Direct) ---
+// --- Lancement de Minecraft (Version Forge 1.20.1 + Connexion Directe) ---
 ipcMain.on('launch-game', async () => {
     if (!userAuth) {
         send('status', 'Erreur : Non connecté !');
@@ -323,7 +323,7 @@ ipcMain.on('launch-game', async () => {
         version: {
             number: '1.20.1',
             type: 'release',
-            custom: 'fabric-loader-0.15.11-1.20.1'
+            custom: '1.20.1-forge-47.2.0'
         },
         memory: {
             max: '4G',
