@@ -62,7 +62,7 @@ function createWindow() {
         alwaysOnTop: true,
         skipTaskbar: true,
         backgroundColor: '#0b0c10',
-        icon: path.join(__dirname, 'build/icon.ico')
+        icon: path.join(__dirname, 'assets', 'icon.ico')
     });
     splashWindow.loadFile('splash.html');
 
@@ -77,7 +77,7 @@ function createWindow() {
             nodeIntegration: true,
             contextIsolation: false
         },
-        icon: path.join(__dirname, 'build/icon.ico')
+        icon: path.join(__dirname, 'assets', 'icon.ico')
     });
     mainWindow.loadFile('index.html');
 
