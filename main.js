@@ -327,7 +327,9 @@ ipcMain.on('launch-game', async () => {
         memory: {
             max: '4G',
             min: '2G'
-        }
+        },
+        server: "eu17-free.falixserver.net",
+        port: 25565
     };
 
     try {
