@@ -1,6 +1,6 @@
 {
   "name": "radiant-launcher-win8",
-  "version": "1.0.001",
+  "version": "1.0.1",
   "description": "Launcher Radiant Survie",
   "author": "Radw123ytb",
   "main": "main.js",
@@ -12,9 +12,7 @@
     "appId": "com.radiant.survie.win10",
     "productName": "Radiant Survie",
     "win": {
-      "target": [
-        "nsis"
-      ],
+      "target": ["nsis"],
       "icon": "assets/icon.ico"
     },
     "nsis": {
@@ -37,6 +35,7 @@
   },
   "dependencies": {
     "adm-zip": "^0.5.16",
+    "axios": "^1.7.9",
     "electron-updater": "^6.3.0",
     "fs-extra": "^11.2.0",
     "minecraft-launcher-core": "^3.18.2",
