@@ -14,6 +14,7 @@ let currentAccountId = null; // Compte actuellement connecté
 
 // Dossier de jeu propre dans AppData/Roaming
 const gameDirectory = path.join(app.getPath('appData'), '.radiant-survie');
+const modsDirectory = path.join(gameDirectory, 'mods');
 
 function send(channel, data) {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -318,6 +319,34 @@ async function ensureJava() {
     return exe;
 }
 
+// --- Synchronisation automatique des mods depuis GitHub ---
+async function ensureMods() {
+    fs.mkdirSync(modsDirectory, { recursive: true });
+
+    const modsList = [
+        {
+            name: 'fancymenu_forge_3.8.1_MC_1.20.1.jar',
+            url: 'https://raw.githubusercontent.com/AstriazYT/minecraft-rubis-launcher/main/mods/fancymenu_forge_3.8.1_MC_1.20.1.jar'
+        },
+        {
+            name: 'cloth-config-12.0.109-forge.jar',
+            url: 'https://raw.githubusercontent.com/AstriazYT/minecraft-rubis-launcher/main/mods/cloth-config-12.0.109-forge.jar'
+        }
+    ];
+
+    for (const mod of modsList) {
+        const destPath = path.join(modsDirectory, mod.name);
+        if (!fs.existsSync(destPath)) {
+            send('status', { text: `Vérification du mod : ${mod.name}...`, percent: 50 });
+            try {
+                await download(mod.url, destPath, () => {});
+            } catch (err) {
+                console.error(`Erreur lors du téléchargement du mod ${mod.name} :`, err);
+            }
+        }
+    }
+}
+
 // --- Lancement de Minecraft (Forge 1.20.1 + Connexion Directe Forcée) ---
 ipcMain.on('launch-game', async () => {
     if (!userAuth) {
@@ -325,39 +354,43 @@ ipcMain.on('launch-game', async () => {
         return;
     }
 
-    // Correctif automatique du bug de nommage JSON de Forge
-    const versionFolder = path.join(gameDirectory, 'versions', '1.20.1-forge-47.2.0');
-    const badJson = path.join(versionFolder, '1.20.1.json');
-    const correctJson = path.join(versionFolder, '1.20.1-forge-47.2.0.json');
-    if (fs.existsSync(badJson) && !fs.existsSync(correctJson)) {
-        try {
-            fs.renameSync(badJson, correctJson);
-        } catch (e) {
-            console.error('Erreur lors du renommage du JSON :', e);
-        }
-    }
-
-    const opts = {
-        authorization: userAuth,
-        root: gameDirectory,
-        version: {
-            number: '1.20.1',
-            type: 'release',
-            custom: '1.20.1-forge-47.2.0'
-        },
-        memory: {
-            max: '4G',
-            min: '2G'
-        },
-        server: "eu17-free.falixserver.net",
-        port: 25565,
-        quickPlay: {
-            type: "multiplayer",
-            identifier: "eu17-free.falixserver.net:25565"
-        }
-    };
-
     try {
+        // 1. Vérification et téléchargement automatique des mods
+        send('status', { text: 'Vérification des mods...', percent: 10 });
+        await ensureMods();
+
+        // 2. Correctif automatique du bug de nommage JSON de Forge
+        const versionFolder = path.join(gameDirectory, 'versions', '1.20.1-forge-47.2.0');
+        const badJson = path.join(versionFolder, '1.20.1.json');
+        const correctJson = path.join(versionFolder, '1.20.1-forge-47.2.0.json');
+        if (fs.existsSync(badJson) && !fs.existsSync(correctJson)) {
+            try {
+                fs.renameSync(badJson, correctJson);
+            } catch (e) {
+                console.error('Erreur lors du renommage du JSON :', e);
+            }
+        }
+
+        const opts = {
+            authorization: userAuth,
+            root: gameDirectory,
+            version: {
+                number: '1.20.1',
+                type: 'release',
+                custom: '1.20.1-forge-47.2.0'
+            },
+            memory: {
+                max: '4G',
+                min: '2G'
+            },
+            server: "eu17-free.falixserver.net",
+            port: 25565,
+            quickPlay: {
+                type: "multiplayer",
+                identifier: "eu17-free.falixserver.net:25565"
+            }
+        };
+
         opts.javaPath = await ensureJava();
         const proc = await launcher.launch(opts);
         if (!proc) {
