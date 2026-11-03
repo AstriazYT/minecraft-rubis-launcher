@@ -1,427 +1,396 @@
-const { app, BrowserWindow, ipcMain, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, safeStorage, Tray, Menu } = require('electron');
 const path = require('path');
-const fs = require('fs');
+const fs = require('fs-extra');
 const https = require('https');
+const axios = require('axios');
 const AdmZip = require('adm-zip');
+const { Client, Authenticator } = require('minecraft-launcher-core');
 const { Auth } = require('msmc');
-const { Client } = require('minecraft-launcher-core');
 const { autoUpdater } = require('electron-updater');
 
-const launcher = new Client();
 let mainWindow;
-let userAuth = null;
-let currentAccountId = null;
+let splashWindow;
+let tray = null;
+const launcher = new Client();
 
-// Dossier de jeu propre dans AppData/Roaming
-const gameDirectory = path.join(app.getPath('appData'), '.radiant-survie');
-const modsDirectory = path.join(gameDirectory, 'mods');
+// Configuration auto-updater
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = true;
 
+// Emplacement des données
+const appDataPath = app.getPath('userData');
+const minecraftPath = path.join(appDataPath, '.radiant-survie');
+const accountsFilePath = path.join(appDataPath, 'accounts.json');
+
+// Configuration Forge 1.20.1 & Version Java
+const FORGE_VERSION = '47.3.0';
+const MINECRAFT_VERSION = '1.20.1';
+const JAVA_URL = 'https://corretto.aws/downloads/latest/amazon-corretto-17-x64-windows-jdk.zip';
+const JAVA_DIR = path.join(appDataPath, 'java17');
+const JAVA_EXE = path.join(JAVA_DIR, 'jdk17.0_x', 'bin', 'javaw.exe'); // Ajusté lors de l'extraction
+
+// Dépôt GitHub pour les mods
+const MODS_ZIP_URL = 'https://github.com/AstriazYT/minecraft-rubis-launcher/raw/main/mods.zip';
+
+// Fonction pour envoyer des messages au front-end
 function send(channel, data) {
     if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send(channel, data);
     }
 }
 
-let splashWindow;
-
-// --- Mises à jour manuelles et automatiques du Launcher (via la flèche) ---
-function setupAutoUpdate() {
-    if (!app.isPackaged) return; // Ignore en mode développement
-
-    autoUpdater.autoDownload = false; // Désactivé pour laisser le contrôle au bouton de téléchargement
-
-    autoUpdater.on('update-available', (info) => {
-        send('status', `Mise à jour ${info.version} disponible ! Téléchargement...`);
-        autoUpdater.downloadUpdate();
+// --- Création de la fenêtre Splash ---
+function createSplashWindow() {
+    splashWindow = new BrowserWindow({
+        width: 400,
+        height: 400,
+        frame: false,
+        transparent: true,
+        alwaysOnTop: true,
+        resizable: false,
+        webPreferences: {
+            nodeIntegration: true,
+            contextIsolation: false
+        }
     });
 
-    autoUpdater.on('download-progress', (p) => {
-        send('status', {
-            text: 'Téléchargement de la mise à jour du launcher...',
-            percent: p.percent
-        });
-    });
-
-    autoUpdater.on('update-downloaded', () => {
-        send('status', 'Mise à jour prête ! Redémarrage...');
-        setTimeout(() => autoUpdater.quitAndInstall(), 2000);
-    });
-
-    autoUpdater.on('update-not-available', () => {
-        send('status', 'Ton launcher est déjà à jour !');
-    });
-
-    autoUpdater.on('error', (err) => {
-        console.error('Erreur de mise à jour :', err);
-        send('status', 'Erreur lors de la recherche de mise à jour.');
-    });
+    splashWindow.loadFile('splash.html');
 }
 
-// Déclencheur relié au bouton avec la flèche vers le bas depuis l'interface
-ipcMain.on('check-for-updates', () => {
-    if (app.isPackaged) {
-        send('status', 'Recherche de mise à jour...');
-        autoUpdater.checkForUpdates();
-    } else {
-        send('status', 'Mode dev : impossible de mettre à jour.');
-    }
-});
-
-function createWindow() {
-    splashWindow = new BrowserWindow({
-        width: 450,
-        height: 300,
-        frame: false,
-        resizable: false,
-        alwaysOnTop: true,
-        skipTaskbar: true,
-        backgroundColor: '#0b0c10',
-        icon: path.join(__dirname, 'assets', 'icon.ico')
-    });
-    splashWindow.loadFile('splash.html');
-
+// --- Création de la fenêtre Principale ---
+function createMainWindow() {
     mainWindow = new BrowserWindow({
-        width: 900,
+        width: 950,
         height: 600,
         frame: false,
         resizable: false,
         show: false,
+        icon: path.join(__dirname, 'assets', 'icon.ico'),
         webPreferences: {
             nodeIntegration: true,
             contextIsolation: false
-        },
-        icon: path.join(__dirname, 'assets', 'icon.ico')
+        }
     });
+
     mainWindow.loadFile('index.html');
 
-    const minDelay = new Promise((resolve) => setTimeout(resolve, 2500));
-    const mainReady = new Promise((resolve) => mainWindow.once('ready-to-show', resolve));
-
-    Promise.all([minDelay, mainReady]).then(() => {
-        if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
+    mainWindow.once('ready-to-show', () => {
+        if (splashWindow && !splashWindow.isDestroyed()) {
+            splashWindow.close();
+        }
         mainWindow.show();
-        setupAutoUpdate();
         checkServerStatus();
-        setInterval(checkServerStatus, 60000);
+        setInterval(checkServerStatus, 30000); // Vérification du serveur toutes les 30 sec
     });
 }
 
-app.whenReady().then(createWindow);
-
-app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit();
-});
-
-// --- Fenêtre ---
-ipcMain.on('minimize-window', () => mainWindow && mainWindow.minimize());
-ipcMain.on('close-window', () => mainWindow && mainWindow.close());
-
-// --- Statut du serveur Falix ---
-function checkServerStatus() {
-    const req = https.request({
-        hostname: 'api.mcsrvstat.us',
-        path: '/3/eu17-free.falixserver.net',
-        method: 'GET'
-    }, (res) => {
-        let data = '';
-        res.on('data', (chunk) => data += chunk);
-        res.on('end', () => {
-            try {
-                const result = JSON.parse(data);
-                if (result.online) {
-                    send('server-status', {
-                        online: true,
-                        players: result.players.online,
-                        max: result.players.max
-                    });
-                } else {
-                    send('server-status', { online: false });
+// --- Création du System Tray (icône à côté de l'horloge) ---
+function createTray() {
+    if (tray) return;
+    const iconPath = path.join(__dirname, 'assets', 'icon.ico');
+    tray = new Tray(iconPath);
+    
+    const contextMenu = Menu.buildFromTemplate([
+        { 
+            label: 'Ouvrir Radiant Launcher', 
+            click: () => {
+                if (mainWindow) {
+                    mainWindow.setSkipTaskbar(false);
+                    mainWindow.show();
                 }
-            } catch (e) {
-                send('server-status', { online: false });
-            }
+            } 
+        },
+        { 
+            label: 'Quitter', 
+            click: () => app.quit() 
+        }
+    ]);
+
+    tray.setToolTip('Radiant Launcher');
+    tray.setContextMenu(contextMenu);
+
+    // Double-clic sur l'icône dans la zone de notification pour réafficher la fenêtre
+    tray.on('double-click', () => {
+        if (mainWindow) {
+            mainWindow.setSkipTaskbar(false);
+            mainWindow.show();
+        }
+    });
+}
+
+// --- Vérification du statut du serveur Falix ---
+async function checkServerStatus() {
+    try {
+        const response = await axios.get('https://api.mcsrvstat.us/2/eu17-free.falixserver.net');
+        send('server-status', {
+            online: response.data.online,
+            players: response.data.players ? response.data.players.online : 0,
+            max: response.data.players ? response.data.players.max : 0
         });
-    });
-
-    req.on('error', () => send('server-status', { online: false }));
-    req.end();
-}
-
-ipcMain.on('check-server', () => checkServerStatus());
-
-// --- Réparation du jeu ---
-ipcMain.on('repair-game', () => {
-    try {
-        const foldersToClean = ['config', 'mods', 'libraries', 'versions'];
-        for (const folder of foldersToClean) {
-            const folderPath = path.join(gameDirectory, folder);
-            if (fs.existsSync(folderPath)) {
-                fs.rmSync(folderPath, { recursive: true, force: true });
-            }
-        }
-        send('status', 'Jeu réparé avec succès ! Relance le lancement.');
-    } catch (err) {
-        console.error('Erreur lors de la réparation :', err);
-        send('status', 'Erreur lors du nettoyage des fichiers.');
-    }
-});
-
-// --- Comptes Microsoft ---
-const accountsFile = path.join(app.getPath('userData'), 'accounts.json');
-
-function loadAccounts() {
-    try {
-        const data = JSON.parse(fs.readFileSync(accountsFile, 'utf-8'));
-        return {
-            lastUsed: data.lastUsed || null,
-            accounts: Array.isArray(data.accounts) ? data.accounts : []
-        };
-    } catch (e) {
-        return { lastUsed: null, accounts: [] };
-    }
-}
-
-function saveAccounts(store) {
-    fs.mkdirSync(path.dirname(accountsFile), { recursive: true });
-    fs.writeFileSync(accountsFile, JSON.stringify(store, null, 2));
-}
-
-function encryptToken(token) {
-    if (!safeStorage.isEncryptionAvailable()) return null;
-    return safeStorage.encryptString(token).toString('base64');
-}
-
-function decryptToken(encrypted) {
-    return safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
-}
-
-function sendAccounts() {
-    const store = loadAccounts();
-    send('accounts', {
-        lastUsed: store.lastUsed,
-        accounts: store.accounts.map((a) => ({ id: a.id, name: a.name }))
-    });
-}
-
-function newAuth() {
-    return new Auth('select_account');
-}
-
-async function finishLogin(xboxManager) {
-    const token = await xboxManager.getMinecraft();
-    userAuth = token.mclc();
-
-    const id = token.profile.id;
-    const name = token.profile.name;
-
-    const encrypted = encryptToken(xboxManager.save());
-    if (encrypted) {
-        const store = loadAccounts();
-        const existing = store.accounts.find((a) => a.id === id);
-        if (existing) {
-            existing.name = name;
-            existing.token = encrypted;
-        } else {
-            store.accounts.push({ id, name, token: encrypted });
-        }
-        store.lastUsed = id;
-        saveAccounts(store);
-    }
-
-    currentAccountId = id;
-    send('login-success', { name, id });
-    sendAccounts();
-}
-
-async function loginWithSaved(id) {
-    const store = loadAccounts();
-    const account = store.accounts.find((a) => a.id === id);
-    if (!account) return;
-    try {
-        const xboxManager = await newAuth().refresh(decryptToken(account.token));
-        await finishLogin(xboxManager);
     } catch (error) {
-        userAuth = null;
-        currentAccountId = null;
-        send('status', 'Session expirée, reconnecte ton compte.');
+        send('server-status', { online: false, players: 0, max: 0 });
     }
 }
 
-ipcMain.on('get-accounts', () => {
-    const store = loadAccounts();
-    sendAccounts();
-    if (store.lastUsed && store.accounts.some((a) => a.id === store.lastUsed)) {
-        loginWithSaved(store.lastUsed);
+// --- Téléchargement / Vérification Java 17 ---
+async function ensureJava17() {
+    send('status', 'Vérification de Java 17...');
+    const javaExePath = path.join(JAVA_DIR, 'bin', 'javaw.exe');
+    
+    if (fs.existsSync(javaExePath)) {
+        return javaExePath;
     }
-});
 
-ipcMain.on('microsoft-login', async () => {
-    try {
-        const xboxManager = await newAuth().launch('electron');
-        await finishLogin(xboxManager);
-    } catch (error) {
-        send('status', 'Connexion annulée ou erreur.');
-    }
-});
-
-ipcMain.on('select-account', (event, id) => loginWithSaved(id));
-
-ipcMain.on('remove-account', (event, id) => {
-    const store = loadAccounts();
-    store.accounts = store.accounts.filter((a) => a.id !== id);
-    if (store.lastUsed === id) store.lastUsed = null;
-    saveAccounts(store);
-    if (currentAccountId === id) {
-        userAuth = null;
-        currentAccountId = null;
-        send('logged-out');
-    }
-    sendAccounts();
-});
-
-// --- Java 17 ---
-const JAVA_URL = 'https://api.adoptium.net/v3/binary/latest/17/ga/windows/x64/jre/hotspot/normal/eclipse';
-const javaDir = path.join(gameDirectory, 'runtime', 'java17');
-
-function findJavaExe() {
-    if (!fs.existsSync(javaDir)) return null;
-    for (const entry of fs.readdirSync(javaDir)) {
-        const exe = path.join(javaDir, entry, 'bin', 'java.exe');
-        if (fs.existsSync(exe)) return exe;
-    }
-    return null;
-}
-
-function download(url, dest, onProgress, redirects = 0) {
-    return new Promise((resolve, reject) => {
-        if (redirects > 5) return reject(new Error('Trop de redirections'));
-        https.get(url, { headers: { 'User-Agent': 'RadiantLauncher' } }, (res) => {
-            if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
-                res.resume();
-                return resolve(download(new URL(res.headers.location, url).toString(), dest, onProgress, redirects + 1));
-            }
-            if (res.statusCode !== 200) {
-                res.resume();
-                return reject(new Error('HTTP ' + res.statusCode));
-            }
-            const total = parseInt(res.headers['content-length'] || '0', 10);
-            let done = 0;
-            const file = fs.createWriteStream(dest);
-            res.on('data', (chunk) => {
-                done += chunk.length;
-                if (total) onProgress((done / total) * 100);
+    send('status', 'Téléchargement de Java 17...');
+    const zipPath = path.join(appDataPath, 'java17.zip');
+    
+    await new Promise((resolve, reject) => {
+        const file = fs.createWriteStream(zipPath);
+        https.get(JAVA_URL, (response) => {
+            response.pipe(file);
+            file.on('finish', () => {
+                file.close(resolve);
             });
-            res.pipe(file);
-            file.on('finish', () => file.close(resolve));
-            file.on('error', reject);
         }).on('error', reject);
     });
-}
 
-async function ensureJava() {
-    const existing = findJavaExe();
-    if (existing) return existing;
-
-    fs.mkdirSync(javaDir, { recursive: true });
-    const zipPath = path.join(javaDir, 'java17.zip');
-    send('status', { text: 'Téléchargement de Java 17...', percent: 0 });
-    await download(JAVA_URL, zipPath, (percent) => send('status', { text: 'Téléchargement de Java 17...', percent }));
-    new AdmZip(zipPath).extractAllTo(javaDir, true);
+    send('status', 'Extraction de Java 17...');
+    const zip = new AdmZip(zipPath);
+    zip.extractAllTo(JAVA_DIR, true);
     fs.unlinkSync(zipPath);
-    return findJavaExe();
+
+    // Repérer le sous-dossier extrait (ex: jdk-17.0.x)
+    const files = fs.readdirSync(JAVA_DIR);
+    const subDir = files.find(f => fs.statSync(path.join(JAVA_DIR, f)).isDirectory());
+    if (subDir) {
+        const actualJavaPath = path.join(JAVA_DIR, subDir, 'bin', 'javaw.exe');
+        return actualJavaPath;
+    }
+
+    return javaExePath;
 }
 
 // --- Synchronisation des Mods ---
-async function ensureMods() {
-    fs.mkdirSync(modsDirectory, { recursive: true });
-    const modsList = [
-        {
-            name: 'fancymenu_forge_3.8.1_MC_1.20.1.jar',
-            url: 'https://raw.githubusercontent.com/AstriazYT/minecraft-rubis-launcher/main/mods/fancymenu_forge_3.8.1_MC_1.20.1.jar'
-        },
-        {
-            name: 'cloth-config-12.0.109-forge.jar',
-            url: 'https://raw.githubusercontent.com/AstriazYT/minecraft-rubis-launcher/main/mods/cloth-config-12.0.109-forge.jar'
-        }
-    ];
+async function syncMods() {
+    send('status', 'Vérification des mods...');
+    const modsDir = path.join(minecraftPath, 'mods');
+    fs.ensureDirSync(modsDir);
 
-    for (const mod of modsList) {
-        const destPath = path.join(modsDirectory, mod.name);
-        try {
-            if (!fs.existsSync(destPath)) {
-                send('status', { text: `Téléchargement du mod ${mod.name}...`, percent: 30 });
-                await download(mod.url, destPath, () => {});
-            }
-        } catch (err) {
-            console.error(`Erreur mod ${mod.name}:`, err);
-        }
+    const zipPath = path.join(appDataPath, 'mods.zip');
+    try {
+        await new Promise((resolve, reject) => {
+            const file = fs.createWriteStream(zipPath);
+            https.get(MODS_ZIP_URL, (response) => {
+                if (response.statusCode === 200) {
+                    response.pipe(file);
+                    file.on('finish', () => file.close(resolve));
+                } else {
+                    reject('Impossible de récupérer les mods');
+                }
+            }).on('error', reject);
+        });
+
+        send('status', 'Mise à jour des mods...');
+        const zip = new AdmZip(zipPath);
+        zip.extractAllTo(modsDir, true);
+        fs.unlinkSync(zipPath);
+    } catch (e) {
+        send('status', 'Erreur de synchro des mods, lancement avec les mods existants.');
     }
 }
 
-// --- Lancement du Jeu ---
-ipcMain.on('launch-game', async (event, userRam) => {
-    if (!userAuth) {
-        send('status', 'Erreur : Non connecté !');
-        return;
-    }
-
+// --- Gestion des Comptes ---
+function loadAccounts() {
+    if (!fs.existsSync(accountsFilePath)) return { accounts: [], lastUsed: null };
     try {
-        send('status', { text: 'Vérification des mods...', percent: 10 });
-        await ensureMods();
+        return fs.readJsonSync(accountsFilePath);
+    } catch (e) {
+        return { accounts: [], lastUsed: null };
+    }
+}
 
-        const versionFolder = path.join(gameDirectory, 'versions', '1.20.1-forge-47.2.0');
-        const badJson = path.join(versionFolder, '1.20.1.json');
-        const correctJson = path.join(versionFolder, '1.20.1-forge-47.2.0.json');
-        if (fs.existsSync(badJson) && !fs.existsSync(correctJson)) {
-            try { fs.renameSync(badJson, correctJson); } catch (e) {}
+function saveAccounts(data) {
+    fs.writeJsonSync(accountsFilePath, data);
+}
+
+// --- Événements IPC ---
+app.whenReady().then(() => {
+    createSplashWindow();
+    setTimeout(createMainWindow, 2000);
+});
+
+// Fenêtre réduire / fermer
+ipcMain.on('minimize-window', () => mainWindow?.minimize());
+ipcMain.on('close-window', () => mainWindow?.close());
+
+// Demande de liste de comptes
+ipcMain.on('get-accounts', (event) => {
+    const data = loadAccounts();
+    event.reply('accounts', data);
+    
+    if (data.lastUsed) {
+        const acc = data.accounts.find(a => a.id === data.lastUsed);
+        if (acc) {
+            event.reply('login-success', acc);
+        }
+    }
+});
+
+// Connexion Microsoft (MSMC)
+ipcMain.on('microsoft-login', async () => {
+    try {
+        const authManager = new Auth("select_account");
+        const xboxManager = await authManager.launch("raw");
+        const token = await xboxManager.getMinecraft();
+
+        const accountData = {
+            id: token.profile.id,
+            name: token.profile.name,
+            token: safeStorage.isEncryptionAvailable() 
+                ? safeStorage.encryptString(token.mclc().access_token).toString('hex') 
+                : token.mclc().access_token
+        };
+
+        const store = loadAccounts();
+        const index = store.accounts.findIndex(a => a.id === accountData.id);
+        if (index >= 0) store.accounts[index] = accountData;
+        else store.accounts.push(accountData);
+        
+        store.lastUsed = accountData.id;
+        saveAccounts(store);
+
+        send('login-success', accountData);
+        send('accounts', store);
+    } catch (error) {
+        send('status', 'Erreur lors de la connexion Microsoft.');
+    }
+});
+
+// Choix ou suppression de compte
+ipcMain.on('select-account', (event, id) => {
+    const store = loadAccounts();
+    const acc = store.accounts.find(a => a.id === id);
+    if (acc) {
+        store.lastUsed = id;
+        saveAccounts(store);
+        event.reply('login-success', acc);
+    }
+});
+
+ipcMain.on('remove-account', (event, id) => {
+    const store = loadAccounts();
+    store.accounts = store.accounts.filter(a => a.id !== id);
+    if (store.lastUsed === id) store.lastUsed = null;
+    saveAccounts(store);
+    event.reply('logged-out');
+    event.reply('accounts', store);
+});
+
+// --- Lancement du jeu ---
+ipcMain.on('launch-game', async (event, ramSetting) => {
+    try {
+        const store = loadAccounts();
+        const acc = store.accounts.find(a => a.id === store.lastUsed);
+        if (!acc) return send('status', 'Veuillez vous connecter.');
+
+        const javaPath = await ensureJava17();
+        await syncMods();
+
+        let token = acc.token;
+        if (safeStorage.isEncryptionAvailable()) {
+            token = safeStorage.decryptString(Buffer.from(acc.token, 'hex'));
         }
 
-        const ramAllocation = userRam || '4G';
-
         const opts = {
-            authorization: userAuth,
-            root: gameDirectory,
+            clientPackage: null,
+            authorization: Authenticator.getAuth({
+                access_token: token,
+                client_token: acc.id,
+                uuid: acc.id,
+                name: acc.name,
+                user_properties: '{}'
+            }),
+            root: minecraftPath,
+            javaPath: javaPath,
             version: {
-                number: '1.20.1',
-                type: 'release',
-                custom: '1.20.1-forge-47.2.0'
+                number: MINECRAFT_VERSION,
+                type: 'release'
             },
+            forge: FORGE_VERSION,
             memory: {
-                max: ramAllocation,
+                max: ramSetting || '4G',
                 min: '2G'
             },
-            server: "eu17-free.falixserver.net",
-            port: 25565,
             quickPlay: {
-                type: "multiplayer",
-                identifier: "eu17-free.falixserver.net:25565"
+                type: 'multiplayer',
+                identifier: 'eu17-free.falixserver.net'
             }
         };
 
-        opts.javaPath = await ensureJava();
+        send('status', 'Lancement de Minecraft...');
 
-        // Masquer le launcher pendant que le jeu tourne
+        // Intégration du System Tray lors du lancement
+        createTray();
         if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.hide();
+            mainWindow.setSkipTaskbar(true); // Retire l'icône de la barre des tâches principale
         }
 
         const proc = await launcher.launch(opts);
-        if (!proc) {
-            send('status', 'Erreur : impossible de lancer le jeu.');
-            if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
-        }
 
-        // Réafficher le launcher quand le jeu s'arrête
+        launcher.on('debug', (e) => console.log(e));
+        launcher.on('data', (e) => console.log(e));
+
+        launcher.on('progress', (e) => {
+            send('status', { text: `Téléchargement : ${e.type}`, percent: (e.task / e.total) * 100 });
+        });
+
+        // Réapparition de la fenêtre une fois le jeu fermé
         launcher.on('close', () => {
             send('game-closed');
             if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.setSkipTaskbar(false);
                 mainWindow.show();
             }
         });
 
-    } catch (error) {
-        console.error(error);
-        send('status', 'Erreur : ' + error.message);
-        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
+    } catch (err) {
+        console.error(err);
+        send('status', 'Erreur lors du lancement.');
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.setSkipTaskbar(false);
+            mainWindow.show();
+        }
     }
+});
+
+// --- Auto Updater (Mise à jour du launcher via la flèche) ---
+ipcMain.on('check-for-updates', () => {
+    send('status', 'Recherche de mise à jour...');
+    autoUpdater.checkForUpdatesAndNotify();
+});
+
+autoUpdater.on('update-available', () => {
+    send('status', 'Téléchargement de la mise à jour...');
+    autoUpdater.downloadUpdate();
+});
+
+autoUpdater.on('update-not-available', () => {
+    send('status', 'Votre launcher est à jour !');
+});
+
+autoUpdater.on('update-downloaded', () => {
+    send('status', 'Mise à jour prête ! Redémarrage...');
+    setTimeout(() => {
+        autoUpdater.quitAndInstall();
+    }, 3000);
+});
+
+autoUpdater.on('error', (err) => {
+    send('status', 'Erreur lors de la recherche de mise à jour.');
+});
+
+// Quitter l'application
+app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit();
 });
